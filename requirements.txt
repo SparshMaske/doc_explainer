@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pdfminer.six
+pdf2image
+pytesseract
+pillow
+joblib
+scikit-learn==1.6.1
+openai
+python-multipart
