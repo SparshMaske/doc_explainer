@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT: int = 8192
     MAX_CONCURRENCY: int = 1
 
-    SEARX_URL: str = "http://localhost:8080"
+    SEARX_URL: str = "http://localhost:8888"
     DATA_DIR: Path = Path("data")
 
 

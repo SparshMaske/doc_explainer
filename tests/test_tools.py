@@ -9,7 +9,7 @@ from stratai.core.schemas import PageContent, SearchResult
 from stratai.tools import scrape as scrape_mod
 from stratai.tools import search as search_mod
 from stratai.tools.cache import Cache
-from stratai.tools.scrape import scrape, truncate_words
+from stratai.tools.scrape import scrape, scrape_many, truncate_words
 from stratai.tools.search import SearchError, parse_results, search
 
 SEARX_PAYLOAD = {
@@ -89,7 +89,7 @@ async def test_scrape_cache_hit_skips_browser(monkeypatch: pytest.MonkeyPatch) -
     page = PageContent(url="https://example.com/a", title="A", markdown="hello world", word_count=2)
     Cache("scrape").set("https://example.com/a", page.model_dump(mode="json"))
 
-    async def no_crawl(url: str) -> None:
+    async def no_crawl(url: str, crawler: object) -> None:
         raise AssertionError("browser called on cache hit")
 
     monkeypatch.setattr(scrape_mod, "_crawl", no_crawl)
@@ -144,6 +144,32 @@ async def test_scrape_success_truncates_and_caches(monkeypatch: pytest.MonkeyPat
     assert Cache("scrape").get("https://example.com/big") is not None
 
 
+async def test_scrape_many_shares_one_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    launches = []
+    ok = SimpleNamespace(success=True, markdown="some text here", metadata={"title": "T"}, status_code=200)
+
+    class CountingCrawler(FakeCrawler):
+        def __call__(self, config: Any = None) -> "FakeCrawler":
+            launches.append(config)
+            return self
+
+    monkeypatch.setattr(scrape_mod, "AsyncWebCrawler", CountingCrawler(result=ok))
+
+    pages = await scrape_many(["https://a.example", "https://example.com/x.pdf", "https://b.example"])
+
+    assert [p is not None for p in pages] == [True, False, True]
+    assert len(launches) == 1
+
+
+async def test_scrape_many_survives_browser_launch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(config: Any = None) -> None:
+        raise RuntimeError("Executable doesn't exist")
+
+    monkeypatch.setattr(scrape_mod, "AsyncWebCrawler", broken)
+
+    assert await scrape_many(["https://a.example", "https://b.example"]) == [None, None]
+
+
 async def test_scrape_skips_pdf() -> None:
     assert await scrape("https://example.com/report.pdf") is None
 
@@ -161,9 +187,8 @@ async def test_live_search_and_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.skip(f"SearXNG unavailable at {get_settings().SEARX_URL}: {exc}")
     assert results, "SearXNG returned no results"
 
-    for result in results[:3]:
-        page = await scrape(str(result.url))
-        if page is not None:
-            assert page.word_count > 0 and page.markdown
-            return
+    pages = [p for p in await scrape_many([str(r.url) for r in results[:3]]) if p is not None]
+    if pages:
+        assert pages[0].word_count > 0 and pages[0].markdown
+        return
     pytest.fail("none of the top 3 results could be scraped (is the Crawl4AI browser installed? run crawl4ai-setup)")

@@ -163,3 +163,29 @@ def test_live_qwen3_8b_returns_source(tmp_path) -> None:
 
     assert isinstance(result, Source)
     assert "python.org" in str(result.url)
+
+
+def test_async_client_reusable_across_event_loops(settings: Settings) -> None:
+    import asyncio
+
+    client, _ = make_client(settings, ["a", "b", "c", "d"])
+
+    async def two_concurrent() -> list[str]:
+        return await asyncio.gather(
+            client.acomplete(agent="scoping", system="s", prompt="p"),
+            client.acomplete(agent="scoping", system="s", prompt="p"),
+        )
+
+    # Each asyncio.run gets a fresh loop (as with Streamlit reruns); the second used to raise RuntimeError.
+    assert sorted(asyncio.run(two_concurrent())) == ["a", "b"]
+    assert sorted(asyncio.run(two_concurrent())) == ["c", "d"]
+
+
+def test_structured_with_thinking_skips_json_mode(settings: Settings) -> None:
+    client, fake = make_client(settings, [f"<think>let me build it</think>{VALID_SOURCE}"])
+
+    result = client.structured(agent="scoping", system="s", prompt="p", schema=Source, think=True)
+
+    assert isinstance(result, Source)
+    assert "response_format" not in fake.requests[0]
+    assert read_logs(client)[-1]["thinking"] == "let me build it"

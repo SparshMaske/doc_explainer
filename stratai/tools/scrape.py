@@ -2,6 +2,7 @@
 
 import logging
 import re
+from contextlib import AsyncExitStack
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, DefaultMarkdownGenerator, PruningContentFilterLXML
 
@@ -32,17 +33,18 @@ def _pick_markdown(md: object) -> str:
     return fit if len(_WORD.findall(fit)) >= MIN_FIT_WORDS else raw
 
 
-async def _crawl(url: str) -> PageContent | None:
-    browser_config = BrowserConfig(headless=True, verbose=False)
-    run_config = CrawlerRunConfig(
+def _run_config() -> CrawlerRunConfig:
+    return CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,  # our own diskcache handles caching
         page_timeout=PAGE_TIMEOUT_MS,
         excluded_tags=["nav", "header", "footer", "aside", "form", "script", "style"],
         markdown_generator=DefaultMarkdownGenerator(content_filter=PruningContentFilterLXML()),
         verbose=False,
     )
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        result = await crawler.arun(url=url, config=run_config)
+
+
+async def _crawl(url: str, crawler: AsyncWebCrawler) -> PageContent | None:
+    result = await crawler.arun(url=url, config=_run_config())
 
     if not result.success:
         logger.warning("scrape failed for %s: %s (status %s)", url, result.error_message, result.status_code)
@@ -58,21 +60,47 @@ async def _crawl(url: str) -> PageContent | None:
     return PageContent(url=url, title=title, markdown=markdown, word_count=word_count)
 
 
+async def scrape_many(urls: list[str]) -> list[PageContent | None]:
+    """Scrape URLs one at a time through a single shared browser; results align with `urls`.
+
+    The browser starts only on the first cache miss. Never raises: failures are logged and give None.
+    """
+    pages: list[PageContent | None] = []
+    cache = Cache("scrape")
+    async with AsyncExitStack() as stack:
+        crawler: AsyncWebCrawler | None = None
+        browser_failed = False
+        for url in urls:
+            page = None
+            try:
+                if is_skipped(url):
+                    logger.info("scrape skipped for %s: PDFs and videos are out of scope", url)
+                elif (cached := cache.get(normalize_url(url))) is not None:
+                    page = PageContent.model_validate(cached)
+                elif browser_failed:
+                    logger.warning("scrape failed for %s: browser could not be started", url)
+                else:
+                    if crawler is None:
+                        try:
+                            crawler = await stack.enter_async_context(
+                                AsyncWebCrawler(config=BrowserConfig(headless=True, verbose=False))
+                            )
+                        except Exception:
+                            browser_failed = True
+                            raise
+                    page = await _crawl(url, crawler)
+                    if page is not None:
+                        cache.set(normalize_url(url), page.model_dump(mode="json"))
+            except Exception as exc:  # noqa: BLE001 - contract: scraping never raises
+                logger.warning("scrape failed for %s: %s: %s", url, type(exc).__name__, exc)
+            pages.append(page)
+    return pages
+
+
 async def scrape(url: str) -> PageContent | None:
     """Return the page as markdown (max 6000 words), or None on any failure. Never raises."""
     try:
-        if is_skipped(url):
-            logger.info("scrape skipped for %s: PDFs and videos are out of scope", url)
-            return None
-        cache = Cache("scrape")
-        key = normalize_url(url)
-        cached = cache.get(key)
-        if cached is not None:
-            return PageContent.model_validate(cached)
-        page = await _crawl(url)
-        if page is not None:
-            cache.set(key, page.model_dump(mode="json"))
-        return page
-    except Exception as exc:  # noqa: BLE001 - contract: scraping never raises
+        return (await scrape_many([url]))[0]
+    except Exception as exc:  # noqa: BLE001 - e.g. the browser failing to shut down cleanly
         logger.warning("scrape failed for %s: %s: %s", url, type(exc).__name__, exc)
         return None

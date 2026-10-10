@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import time
+import weakref
 from typing import Any, TypeVar
 
 import httpx
@@ -87,7 +88,11 @@ class LLMClient:
         self.settings = settings or get_settings()
         self.run_logger = run_logger or RunLogger(data_dir=self.settings.DATA_DIR)
         self._gate = _get_call_gate(self.settings.MAX_CONCURRENCY)
-        self._async_gate = asyncio.Semaphore(max(1, self.settings.MAX_CONCURRENCY))
+        # asyncio primitives bind to one event loop, so keep one semaphore per loop (Streamlit reruns,
+        # repeated asyncio.run calls). The thread gate below still enforces the process-wide limit.
+        self._async_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+            weakref.WeakKeyDictionary()
+        )
         self._clients: dict[str, OpenAI] = {}
         self._seq = 0
         self._seq_lock = threading.Lock()
@@ -116,7 +121,14 @@ class LLMClient:
         error = ""
         for attempt in range(1, MAX_STRUCTURED_ATTEMPTS + 1):
             raw = self._call(
-                agent, messages, temperature=0.0, think=think, json_mode=True, attempt=attempt
+                agent,
+                messages,
+                temperature=0.0,
+                think=think,
+                # JSON mode constrains output from the first token, which blocks qwen3's <think> block;
+                # with thinking on, rely on the schema prompt plus the validate-and-retry loop instead.
+                json_mode=not think,
+                attempt=attempt,
             )
             try:
                 return schema.model_validate_json(extract_json(raw))
@@ -142,13 +154,13 @@ class LLMClient:
     async def acomplete(
         self, agent: str, system: str, prompt: str, temperature: float = 0.2, think: bool = False
     ) -> str:
-        async with self._async_gate:
+        async with self._async_gate():
             return await asyncio.to_thread(self.complete, agent, system, prompt, temperature, think)
 
     async def astructured(
         self, agent: str, system: str, prompt: str, schema: type[T], think: bool = False
     ) -> T:
-        async with self._async_gate:
+        async with self._async_gate():
             return await asyncio.to_thread(self.structured, agent, system, prompt, schema, think)
 
     def list_models(self, agent: str) -> list[str]:
@@ -166,6 +178,13 @@ class LLMClient:
         return model, provider.lower()
 
     # ---- internals --------------------------------------------------------------------------
+
+    def _async_gate(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        gate = self._async_gates.get(loop)
+        if gate is None:
+            gate = self._async_gates[loop] = asyncio.Semaphore(max(1, self.settings.MAX_CONCURRENCY))
+        return gate
 
     def _client_for(self, provider: str) -> OpenAI:
         if provider not in self._clients:

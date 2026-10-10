@@ -38,7 +38,14 @@ Runs entirely on a MacBook M2 (16GB) via Ollama: `qwen3:14b` (reasoning), `qwen3
 - Only ONE LLM call may run at a time (`MAX_CONCURRENCY=1`) because of the 16GB memory limit.
 - Configuration comes from `.env` via `stratai/core/config.py`; never hard-code model names.
 
+## Web research tools
+
+- `stratai/tools/search.py`: `search(query)` queries SearXNG (`SEARX_URL`, default `http://localhost:8888`; start it with `docker compose -f docker/searxng/docker-compose.yml up -d`). Raises `SearchError` if SearXNG is down, so callers can tell that apart from "no results".
+- `stratai/tools/scrape.py`: `scrape(url)` / `scrape_many(urls)` return `PageContent` markdown (max 6000 words) or `None`; they never raise. Use `scrape_many` for batches: it shares one browser.
+- Both cache results for 7 days in `data/cache/` via `stratai/tools/cache.py`. PDFs and video links are skipped.
+
 ## Commands
 
 - `uv sync`: install dependencies
-- `uv run pytest`: run tests
+- `uv run pytest`: run tests (live tests skip when Ollama/SearXNG are down)
+- `uv run pytest -m live -rs`: run only the live tests against Ollama, SearXNG, and Crawl4AI, showing skip reasons
