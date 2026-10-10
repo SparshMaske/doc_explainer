@@ -13,6 +13,8 @@ dependencies = [
     "tenacity>=8.3",
     "python-dotenv>=1.0",
     "rich>=13.7",
+    "crawl4ai>=0.9.4",
+    "diskcache>=5.6.3",
 ]
 
 [dependency-groups]
@@ -31,3 +33,4 @@ packages = ["stratai"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live: needs running local services (Ollama, SearXNG, Crawl4AI browser)"]

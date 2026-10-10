@@ -21,3 +21,18 @@ class Claim(BaseModel):
     text: str
     sources: list[Source] = Field(min_length=1)
     confidence: Literal["high", "medium", "low"]
+
+
+class SearchResult(BaseModel):
+    url: AnyHttpUrl
+    title: str
+    snippet: str = ""
+    engine: str = ""
+
+
+class PageContent(BaseModel):
+    url: AnyHttpUrl
+    title: str
+    markdown: str
+    word_count: int
+    fetched_at: datetime = Field(default_factory=_utcnow)
